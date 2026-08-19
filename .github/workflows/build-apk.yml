@@ -5,6 +5,10 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,31 +26,67 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
-
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
 
-      - name: Extract Android project
-        run: |
-          mkdir -p appsrc/project
-          unzip -q jarvis_android_src.zip -d appsrc/project
-
-      - name: Generate private pairing secret
+      - name: Build Jarvis with diagnostics
+        id: jarvis_build
         shell: bash
         run: |
-          SECRET=$(openssl rand -hex 24)
-          echo "$SECRET" > appsrc/jarvis_secret.txt
-          sed -i "s/__JARVIS_SECRET__/$SECRET/g" appsrc/project/app/src/main/java/com/levy/jarvis/JarvisConfig.java
+          set +e
+          {
+            echo '=== Android SDK ==='
+            sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Build APK
-        working-directory: appsrc/project
-        run: gradle assembleDebug --no-daemon --stacktrace
+            echo '=== Testando ZIP ==='
+            unzip -t jarvis_android_src.zip
+
+            echo '=== Extraindo projeto ==='
+            rm -rf appsrc
+            mkdir -p appsrc/project
+            unzip -q jarvis_android_src.zip -d appsrc/project
+
+            echo '=== Gerando pareamento ==='
+            SECRET=$(openssl rand -hex 24)
+            echo "$SECRET" > appsrc/jarvis_secret.txt
+            sed -i "s/__JARVIS_SECRET__/$SECRET/g" appsrc/project/app/src/main/java/com/levy/jarvis/JarvisConfig.java
+
+            echo '=== Compilando APK ==='
+            cd appsrc/project
+            gradle assembleDebug --no-daemon --stacktrace
+          } 2>&1 | tee build.log
+
+          STATUS=${PIPESTATUS[0]}
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Report build error automatically
+        if: steps.jarvis_build.outputs.status != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          {
+            echo "Falha automática na compilação do JARVIS."
+            echo
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            echo '```text'
+            tail -n 350 build.log
+            echo '```'
+          } > issue_body.md
+
+          gh issue create \
+            --title "JARVIS build falhou - run $GITHUB_RUN_ID" \
+            --body-file issue_body.md
+
+          exit 1
 
       - name: Prepare download package
+        if: steps.jarvis_build.outputs.status == '0'
         run: |
           mkdir -p ready
           cp appsrc/project/app/build/outputs/apk/debug/app-debug.apk ready/Jarvis.apk
@@ -59,6 +99,7 @@ jobs:
           EOF
 
       - name: Upload Jarvis APK
+        if: steps.jarvis_build.outputs.status == '0'
         uses: actions/upload-artifact@v4
         with:
           name: Jarvis-APK-Pronto
