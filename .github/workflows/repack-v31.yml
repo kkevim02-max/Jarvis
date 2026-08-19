@@ -1,0 +1,37 @@
+name: Repack JARVIS 3.1 downloadable artifact
+
+on:
+  push:
+    branches: [ jarvis-v31-repack ]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+  repack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download successful JARVIS 3.1 artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p downloaded
+          gh run download 32291968320 --repo "$GITHUB_REPOSITORY" --name "JARVIS-3.1-CLOUD-INSTALACAO-LIMPA" --dir downloaded
+          find downloaded -maxdepth 2 -type f -printf '%p %s bytes\n'
+          test -f downloaded/JARVIS_3_1_CLOUD_INSTALACAO_LIMPA.zip
+
+      - name: Upload only final installation ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-3.1-CLOUD-FINAL
+          path: downloaded/JARVIS_3_1_CLOUD_INSTALACAO_LIMPA.zip
+          retention-days: 30
+          compression-level: 0
+
+      - name: Report ready
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "JARVIS 3.1 CLOUD download PRONTO - run $GITHUB_RUN_ID" --body "Pacote final reduzido e pronto para download. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
