@@ -124,6 +124,22 @@ public class JarvisService extends Service {
         return Math.sqrt(sum / Math.max(1, samples));
     }
 
+    // O microfone deste aparelho entrega sinal baixo. Amplificamos apenas a cópia
+    // enviada ao Whisper; o áudio bruto continua sendo usado pelo detector de voz.
+    private static byte[] amplifiedCopy(byte[] buffer, int len) {
+        final double gain = 3.0;
+        byte[] out = Arrays.copyOf(buffer, len);
+        for (int i = 0; i + 1 < len; i += 2) {
+            int sample = (short)((out[i] & 0xff) | (out[i + 1] << 8));
+            int boosted = (int)Math.round(sample * gain);
+            if (boosted > 32767) boosted = 32767;
+            if (boosted < -32768) boosted = -32768;
+            out[i] = (byte)(boosted & 0xff);
+            out[i + 1] = (byte)((boosted >> 8) & 0xff);
+        }
+        return out;
+    }
+
     private void listenLoop() {
         final int rate = 16000;
         final int min = AudioRecord.getMinBufferSize(
@@ -145,7 +161,7 @@ public class JarvisService extends Service {
         }
 
         byte[] buf = new byte[block];
-        double noise = 350.0;
+        double noise = 180.0;
         boolean speaking = false;
         int hotBlocks = 0;
         int silentBlocks = 0;
@@ -164,13 +180,13 @@ public class JarvisService extends Service {
                 if (n <= 0) continue;
 
                 double level = rms(buf, n);
-                double threshold = Math.max(550.0, noise * 2.8);
+                double threshold = Math.max(220.0, noise * 1.9);
 
                 if (!speaking) {
-                    noise = noise * 0.96 + Math.min(level, 1200) * 0.04;
-                    byte[] copy = Arrays.copyOf(buf, n);
+                    noise = noise * 0.97 + Math.min(level, 900) * 0.03;
+                    byte[] copy = amplifiedCopy(buf, n);
                     pre.addLast(copy);
-                    while (pre.size() > 3) pre.removeFirst();
+                    while (pre.size() > 5) pre.removeFirst();
 
                     if (level > threshold) hotBlocks++; else hotBlocks = 0;
 
@@ -182,13 +198,13 @@ public class JarvisService extends Service {
                         pre.clear();
                     }
                 } else {
-                    speech.write(buf, 0, n);
+                    speech.write(amplifiedCopy(buf, n));
                     speechBlocks++;
 
                     if (level < threshold * 0.75) silentBlocks++;
                     else silentBlocks = 0;
 
-                    if (silentBlocks >= 6 || speechBlocks >= 75) {
+                    if (silentBlocks >= 8 || speechBlocks >= 90) {
                         byte[] pcm = speech.toByteArray();
                         speech.reset();
                         speaking = false;
