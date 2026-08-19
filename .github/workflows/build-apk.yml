@@ -19,29 +19,32 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
 
-      - name: Decode Android project
+      - name: Extract Android project
         run: |
-          mkdir -p appsrc
-          base64 -d project.b64 > appsrc/project.zip
-          unzip -q appsrc/project.zip -d appsrc/project
+          mkdir -p appsrc/project
+          unzip -q jarvis_android_src.zip -d appsrc/project
 
       - name: Generate private pairing secret
-        id: secret
         shell: bash
         run: |
           SECRET=$(openssl rand -hex 24)
-          echo "secret=$SECRET" >> "$GITHUB_OUTPUT"
           echo "$SECRET" > appsrc/jarvis_secret.txt
           sed -i "s/__JARVIS_SECRET__/$SECRET/g" appsrc/project/app/src/main/java/com/levy/jarvis/JarvisConfig.java
 
       - name: Build APK
         working-directory: appsrc/project
-        run: gradle assembleDebug --no-daemon
+        run: gradle assembleDebug --no-daemon --stacktrace
 
       - name: Prepare download package
         run: |
@@ -51,9 +54,8 @@ jobs:
           cat > ready/LEIA-ME.txt <<'EOF'
           JARVIS APK PRONTO
 
-          1. Instale Jarvis.apk no Motorola.
-          2. Guarde jarvis_secret.txt: ele é o segredo exclusivo desta compilação.
-          3. O núcleo do PC precisa usar o mesmo segredo para conversar com o APK.
+          - Jarvis.apk: instale no Motorola.
+          - jarvis_secret.txt: segredo exclusivo para conectar o APK ao núcleo do PC.
           EOF
 
       - name: Upload Jarvis APK
