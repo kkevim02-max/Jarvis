@@ -1,4 +1,4 @@
-name: Build Jarvis APK
+name: Build JARVIS 3.0 PC + Android
 
 on:
   push:
@@ -10,12 +10,70 @@ permissions:
   issues: write
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  build-v3:
+    runs-on: windows-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Restore JARVIS 3.0 source payload
+        shell: pwsh
+        run: |
+          python -c "import base64,gzip,pathlib; parts=sorted(pathlib.Path('v3_payload').glob('part*')); raw=''.join(p.read_text().strip() for p in parts); pathlib.Path('v3_payload/payload.tar.gz').write_bytes(base64.b64decode(raw))"
+          tar -xzf v3_payload/payload.tar.gz
+          python -m py_compile pc/jarvis_app.py
+          Write-Host 'JARVIS 3.0 payload restored.'
+
+      - name: Generate one pairing secret for PC and APK
+        shell: pwsh
+        run: |
+          $bytes = New-Object byte[] 24
+          [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+          $secret = -join ($bytes | ForEach-Object { $_.ToString('x2') })
+          Set-Content -Path jarvis_secret.txt -Value $secret -NoNewline -Encoding ascii
+
+          $pc = Get-Content pc/jarvis_app.py -Raw
+          $pc = $pc.Replace('__JARVIS_SECRET__', $secret)
+          Set-Content pc/jarvis_app.py $pc -Encoding utf8
+
+          $cfg = 'android/app/src/main/java/com/levy/jarvis/JarvisConfig.java'
+          $java = Get-Content $cfg -Raw
+          $java = $java.Replace('__JARVIS_SECRET__', $secret)
+          Set-Content $cfg $java -Encoding utf8
+
+          Write-Host 'Pairing prepared (secret not printed).'
+
+      - name: Install Windows app build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r pc/requirements-build.txt
+
+      - name: Syntax check PC app
+        shell: pwsh
+        run: |
+          python -m py_compile pc/jarvis_app.py
+
+      - name: Build Jarvis.exe (no console)
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed `
+            --name Jarvis `
+            --collect-all kokoro_onnx `
+            --collect-all espeakng_loader `
+            --collect-all phonemizer `
+            --collect-all onnxruntime `
+            --hidden-import pystray._win32 `
+            pc/jarvis_app.py
+          if (!(Test-Path dist/Jarvis.exe)) { throw 'Jarvis.exe was not generated' }
+          Get-Item dist/Jarvis.exe | Format-List Name,Length
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -26,102 +84,85 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Install Android SDK 35
+        shell: pwsh
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
 
-      - name: Build Jarvis with diagnostics
-        id: jarvis_build
-        shell: bash
+      - name: Build Jarvis 3.0 APK
+        shell: pwsh
+        working-directory: android
         run: |
-          set +e
-          {
-            echo '=== Android SDK ==='
-            sdkmanager "platforms;android-35" "build-tools;35.0.0" || exit 41
+          gradle assembleDebug --no-daemon --stacktrace
+          if (!(Test-Path app/build/outputs/apk/debug/app-debug.apk)) { throw 'Jarvis.apk was not generated' }
 
-            echo '=== Preparando projeto Android direto ==='
-            rm -rf appsrc
-            mkdir -p appsrc
-            cp -R android appsrc/project || exit 42
-            test -f appsrc/project/settings.gradle || exit 43
-            test -f appsrc/project/app/src/main/java/com/levy/jarvis/MainActivity.java || exit 44
-
-            echo '=== Gerando pareamento ==='
-            SECRET=$(openssl rand -hex 24)
-            echo "$SECRET" > appsrc/jarvis_secret.txt
-            sed -i "s/__JARVIS_SECRET__/$SECRET/g" appsrc/project/app/src/main/java/com/levy/jarvis/JarvisConfig.java || exit 45
-
-            echo '=== Ajustando microfone para alta sensibilidade ==='
-            SERVICE=appsrc/project/app/src/main/java/com/levy/jarvis/JarvisService.java
-            sed -i 's/final double gain = 3.0;/final double gain = 6.0;/' "$SERVICE"
-            sed -i 's/double noise = 180.0;/double noise = 110.0;/' "$SERVICE"
-            sed -i 's/Math.max(220.0, noise \* 1.9)/Math.max(120.0, noise * 1.5)/' "$SERVICE"
-            sed -i 's/while (pre.size() > 5)/while (pre.size() > 7)/' "$SERVICE"
-            sed -i 's/if (hotBlocks >= 2)/if (hotBlocks >= 1)/' "$SERVICE"
-            sed -i 's/if (silentBlocks >= 8 || speechBlocks >= 90)/if (silentBlocks >= 10 || speechBlocks >= 110)/' "$SERVICE"
-
-            echo '=== Compilando APK ==='
-            cd appsrc/project
-            gradle assembleDebug --no-daemon --stacktrace || exit 50
-          } 2>&1 | tee build.log
-
-          STATUS=${PIPESTATUS[0]}
-          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Report build error automatically
-        if: steps.jarvis_build.outputs.status != '0'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
+      - name: Prepare clean-install package
+        shell: pwsh
         run: |
-          {
-            echo "Falha automática na compilação do JARVIS."
-            echo
-            echo "Commit: $GITHUB_SHA"
-            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-            echo "Código interno: ${{ steps.jarvis_build.outputs.status }}"
-            echo
-            echo '```text'
-            tail -n 400 build.log
-            echo '```'
-          } > issue_body.md
+          New-Item -ItemType Directory -Force ready | Out-Null
+          Copy-Item dist/Jarvis.exe ready/Jarvis.exe
+          Copy-Item android/app/build/outputs/apk/debug/app-debug.apk ready/Jarvis.apk
+          Copy-Item jarvis_secret.txt ready/jarvis_secret.txt
+          @'
+          J.A.R.V.I.S 3.0 — INSTALAÇÃO LIMPA
 
-          gh issue create \
-            --title "JARVIS build falhou - run $GITHUB_RUN_ID" \
-            --body-file issue_body.md
+          1. Extraia esta pasta inteira.
+          2. Abra Jarvis.exe.
+          3. Na primeira execução ele instala/repara automaticamente Ollama, a IA selecionada,
+             Whisper.cpp e a voz Kokoro, tudo sem deixar janelas CMD abertas.
+          4. Conecte o Motorola por USB e use o botão "Instalar APK no celular".
+          5. Depois disso o uso normal é por Wi-Fi. O USB/ADB fica só para instalação/manutenção.
 
-          exit 1
+          O Jarvis.exe:
+          - roda na bandeja e em segundo plano;
+          - pode iniciar com o Windows;
+          - gerencia Ollama e o núcleo local;
+          - mostra status do PC/celular/modelo;
+          - possui perfis Rápido, Equilibrado e Inteligente;
+          - mantém ações de PC em lista permitida, sem executar comandos arbitrários da IA.
 
-      - name: Prepare download package
-        if: steps.jarvis_build.outputs.status == '0'
-        run: |
-          mkdir -p ready
-          cp appsrc/project/app/build/outputs/apk/debug/app-debug.apk ready/Jarvis.apk
-          cp appsrc/jarvis_secret.txt ready/jarvis_secret.txt
-          cat > ready/LEIA-ME.txt <<'EOF'
-          JARVIS APK PRONTO
+          O Jarvis.apk 3.0:
+          - corrige o ForegroundService do Android 9;
+          - só inicia o microfone depois da permissão;
+          - reconecta ao PC automaticamente por Wi-Fi;
+          - usa "Ei, mano" e "Jarvis" como chamadas;
+          - mantém ganho alto para o microfone fraco;
+          - continua ativo em segundo plano.
+          '@ | Set-Content ready/LEIA-ME.txt -Encoding utf8
 
-          - Jarvis.apk: instale no Motorola.
-          - jarvis_secret.txt: segredo exclusivo para conectar o APK ao núcleo do PC.
-          - Esta build usa sensibilidade alta de microfone e ganho digital 6x.
-          EOF
+          Compress-Archive -Path ready/* -DestinationPath JARVIS_3_0_INSTALACAO_LIMPA.zip -Force
+          Get-ChildItem ready | Format-Table Name,Length
+          Get-Item JARVIS_3_0_INSTALACAO_LIMPA.zip | Format-List Name,Length
 
-      - name: Upload Jarvis APK
-        if: steps.jarvis_build.outputs.status == '0'
+      - name: Upload JARVIS 3.0 complete package
         uses: actions/upload-artifact@v4
         with:
-          name: Jarvis-APK-Pronto
-          path: ready/
+          name: JARVIS-3.0-INSTALACAO-LIMPA
+          path: |
+            JARVIS_3_0_INSTALACAO_LIMPA.zip
+            ready/Jarvis.exe
+            ready/Jarvis.apk
+            ready/LEIA-ME.txt
           retention-days: 30
+          compression-level: 0
 
-      - name: Report success automatically
-        if: steps.jarvis_build.outputs.status == '0'
+      - name: Report success
+        if: success()
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
+        shell: pwsh
         run: |
-          gh issue create \
-            --title "JARVIS build SUCESSO - run $GITHUB_RUN_ID" \
-            --body "APK compilado com sucesso. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh issue create --title "JARVIS 3.0 build SUCESSO - run $env:GITHUB_RUN_ID" --body "Jarvis.exe + Jarvis.apk 3.0 compilados. Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh issue create --title "JARVIS 3.0 build FALHOU - run $env:GITHUB_RUN_ID" --body "A build 3.0 falhou. Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
