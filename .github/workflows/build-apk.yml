@@ -52,6 +52,15 @@ jobs:
             echo "$SECRET" > appsrc/jarvis_secret.txt
             sed -i "s/__JARVIS_SECRET__/$SECRET/g" appsrc/project/app/src/main/java/com/levy/jarvis/JarvisConfig.java || exit 45
 
+            echo '=== Ajustando microfone para alta sensibilidade ==='
+            SERVICE=appsrc/project/app/src/main/java/com/levy/jarvis/JarvisService.java
+            sed -i 's/final double gain = 3.0;/final double gain = 6.0;/' "$SERVICE"
+            sed -i 's/double noise = 180.0;/double noise = 110.0;/' "$SERVICE"
+            sed -i 's/Math.max(220.0, noise \* 1.9)/Math.max(120.0, noise * 1.5)/' "$SERVICE"
+            sed -i 's/while (pre.size() > 5)/while (pre.size() > 7)/' "$SERVICE"
+            sed -i 's/if (hotBlocks >= 2)/if (hotBlocks >= 1)/' "$SERVICE"
+            sed -i 's/if (silentBlocks >= 8 || speechBlocks >= 90)/if (silentBlocks >= 10 || speechBlocks >= 110)/' "$SERVICE"
+
             echo '=== Compilando APK ==='
             cd appsrc/project
             gradle assembleDebug --no-daemon --stacktrace || exit 50
@@ -96,6 +105,7 @@ jobs:
 
           - Jarvis.apk: instale no Motorola.
           - jarvis_secret.txt: segredo exclusivo para conectar o APK ao núcleo do PC.
+          - Esta build usa sensibilidade alta de microfone e ganho digital 6x.
           EOF
 
       - name: Upload Jarvis APK
