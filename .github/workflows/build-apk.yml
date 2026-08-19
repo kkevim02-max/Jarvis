@@ -1,4 +1,4 @@
-name: Build JARVIS 3.1 Cloud PC + Android
+name: Build JARVIS 3.1.1 Cloud PC + Android
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   issues: write
 
 jobs:
-  build-v31:
+  build-v311:
     runs-on: windows-latest
     timeout-minutes: 50
 
@@ -23,27 +23,28 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Restore Android 3.x source payload
+      - name: Restore Android 3.x source payload and apply 3.1.1 patch
         shell: pwsh
         run: |
           python -c "import base64,pathlib; parts=sorted(pathlib.Path('v3_payload').glob('part*')); raw=''.join(p.read_text().strip() for p in parts); pathlib.Path('v3_payload/payload.tar.gz').write_bytes(base64.b64decode(raw))"
           tar -xzf v3_payload/payload.tar.gz
           Copy-Item v31/jarvis_app.py pc/jarvis_app.py -Force
           Copy-Item v31/requirements-build.txt pc/requirements-build.txt -Force
+          python v31/patch_311.py
 
           $gradle = Get-Content android/app/build.gradle -Raw
-          $gradle = [regex]::Replace($gradle, 'versionCode\s+\d+', 'versionCode 31')
-          $gradle = [regex]::Replace($gradle, 'versionName\s+"[^"]+"', 'versionName "3.1"')
+          $gradle = [regex]::Replace($gradle, 'versionCode\s+\d+', 'versionCode 311')
+          $gradle = [regex]::Replace($gradle, 'versionName\s+"[^"]+"', 'versionName "3.1.1"')
           Set-Content android/app/build.gradle $gradle -Encoding utf8
 
           Get-ChildItem android/app/src/main/java/com/levy/jarvis/*.java | ForEach-Object {
             $c = Get-Content $_.FullName -Raw
-            $c = $c.Replace('J.A.R.V.I.S 3.0', 'J.A.R.V.I.S 3.1').Replace('• 3.0', '• 3.1').Replace(' 3.0', ' 3.1')
+            $c = $c.Replace('J.A.R.V.I.S 3.0', 'J.A.R.V.I.S 3.1.1').Replace('• 3.0', '• 3.1.1').Replace(' 3.0', ' 3.1.1')
             Set-Content $_.FullName $c -Encoding utf8
           }
 
           python -m py_compile pc/jarvis_app.py
-          Write-Host 'JARVIS 3.1 source prepared.'
+          Write-Host 'JARVIS 3.1.1 source prepared.'
 
       - name: Generate one pairing secret for PC and APK
         shell: pwsh
@@ -78,12 +79,8 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean --onefile --windowed `
             --name Jarvis `
-            --collect-all kokoro_onnx `
-            --collect-all espeakng_loader `
-            --collect-all phonemizer `
+            --collect-all piper `
             --collect-all onnxruntime `
-            --collect-all misaki `
-            --collect-all soundfile `
             --hidden-import pystray._win32 `
             pc/jarvis_app.py
           if (!(Test-Path dist/Jarvis.exe)) { throw 'Jarvis.exe was not generated' }
@@ -107,53 +104,49 @@ jobs:
         with:
           gradle-version: '8.13'
 
-      - name: Build Jarvis 3.1 APK
+      - name: Build Jarvis 3.1.1 APK
         shell: pwsh
         working-directory: android
         run: |
           gradle assembleDebug --no-daemon --stacktrace
           if (!(Test-Path app/build/outputs/apk/debug/app-debug.apk)) { throw 'Jarvis.apk was not generated' }
 
-      - name: Prepare clean-install package
+      - name: Prepare final package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force ready | Out-Null
           Copy-Item dist/Jarvis.exe ready/Jarvis.exe
           Copy-Item android/app/build/outputs/apk/debug/app-debug.apk ready/Jarvis.apk
           @'
-          J.A.R.V.I.S 3.1 CLOUD — INSTALAÇÃO LIMPA
+          J.A.R.V.I.S 3.1.1 CLOUD
 
-          1. Extraia a pasta inteira e abra Jarvis.exe.
-          2. Clique em "Abrir página da Groq" e crie uma chave no plano Free.
-          3. Clique em "Configurar Groq (grátis)", cole a chave e salve.
-          4. O Jarvis baixa sozinho a voz masculina pt-BR e prepara tudo em segundo plano.
-          5. Conecte o Motorola por USB e clique em "Instalar APK no celular".
-          6. Depois do APK instalado, o uso normal é por Wi-Fi.
+          CORREÇÕES E MELHORIAS:
+          - Corrigido o problema da voz que não saía no Jarvis 3.1.
+          - Nova voz masculina pt-BR local com Piper.
+          - Controle de volume do JARVIS de 0 a 100% dentro do Jarvis.exe.
+          - Botão MUTAR/DESMUTAR JARVIS.
+          - O volume do Jarvis é aplicado no áudio da própria voz e NÃO muda o volume da música do celular.
+          - Groq continua cuidando do Whisper Large V3 Turbo e GPT-OSS 20B.
+          - A chave Groq permanece salva no Windows; a pasta de dados continua em Jarvis31.
 
-          O QUE MUDOU:
-          - Entendimento de voz: Whisper Large V3 Turbo na Groq.
-          - Cérebro: GPT-OSS 20B na Groq, com raciocínio baixo para reduzir latência.
-          - Voz: Kokoro pm_alex, masculina, pt-BR.
-          - Resposta em streaming: começa a falar por frases antes de terminar todo o texto.
-          - "Ei, mano" e "Jarvis" aceitam variações/falhas de transcrição.
-          - Ollama não fica consumindo CPU por padrão; fica apenas como instalação antiga/fallback manual.
-          - A chave Groq é protegida pelo DPAPI do Windows e não é colocada no APK.
-          - ADB oficial é baixado pelo próprio app e reiniciado para evitar conflito de versões.
-          - O Jarvis continua na bandeja e pode iniciar com o Windows.
-
-          IMPORTANTE:
-          O plano Free da Groq tem limites de uso. Não é uma promessa de serviço gratuito ilimitado para sempre.
+          INSTALAÇÃO:
+          1. Extraia a pasta inteira.
+          2. Feche o Jarvis 3.1 antigo e abra este Jarvis.exe.
+          3. A chave Groq já deve continuar salva no mesmo Windows.
+          4. Aguarde aparecer que a voz masculina está pronta. Na primeira vez ele baixa o modelo de voz.
+          5. Conecte o Motorola por USB e clique em "Instalar APK no celular" para sincronizar o novo pareamento.
+          6. Depois use normalmente por Wi-Fi.
           '@ | Set-Content ready/LEIA-ME.txt -Encoding utf8
 
-          Compress-Archive -Path ready/* -DestinationPath JARVIS_3_1_CLOUD_INSTALACAO_LIMPA.zip -Force
+          Compress-Archive -Path ready/* -DestinationPath JARVIS_3_1_1_CLOUD_FINAL.zip -Force
           Get-ChildItem ready | Format-Table Name,Length
-          Get-Item JARVIS_3_1_CLOUD_INSTALACAO_LIMPA.zip | Format-List Name,Length
+          Get-Item JARVIS_3_1_1_CLOUD_FINAL.zip | Format-List Name,Length
 
-      - name: Upload JARVIS 3.1 final package
+      - name: Upload JARVIS 3.1.1 final package
         uses: actions/upload-artifact@v4
         with:
-          name: JARVIS-3.1-CLOUD-FINAL
-          path: JARVIS_3_1_CLOUD_INSTALACAO_LIMPA.zip
+          name: JARVIS-3.1.1-CLOUD-FINAL
+          path: JARVIS_3_1_1_CLOUD_FINAL.zip
           retention-days: 30
           compression-level: 0
 
@@ -163,7 +156,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh issue create --title "JARVIS 3.1 CLOUD FINAL build SUCESSO - run $env:GITHUB_RUN_ID" --body "Pacote final Jarvis.exe + Jarvis.apk 3.1 Cloud compilado e reduzido para download. Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          gh issue create --title "JARVIS 3.1.1 CLOUD build SUCESSO - run $env:GITHUB_RUN_ID" --body "Voz corrigida + volume independente + mute. Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
 
       - name: Report failure
         if: failure()
@@ -171,4 +164,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh issue create --title "JARVIS 3.1 CLOUD FINAL build FALHOU - run $env:GITHUB_RUN_ID" --body "A build 3.1 Cloud final falhou. Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          gh issue create --title "JARVIS 3.1.1 CLOUD build FALHOU - run $env:GITHUB_RUN_ID" --body "A build 3.1.1 falhou. Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
