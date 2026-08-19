@@ -40,30 +40,33 @@ jobs:
             echo '=== Android SDK ==='
             sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
+            echo '=== Validando partes do projeto ==='
+            echo 'c9de70cc500d3c92f150ff5f87117bd25c6a0d12b3822ef62de84338d436d655  project.parts/part01.b64' | sha256sum -c - || exit 41
+            echo '3d5e21e15c98176f53221f57ba78a717925a0c25cccb7b44cbc2a6169c7a049a  project.parts/part02.b64' | sha256sum -c - || exit 42
+            echo 'cf09e649b04a4740fc99a781c66778c013d855769abcc3ebc306b84a01b4efab  project.parts/part03.b64' | sha256sum -c - || exit 43
+            echo '2117794d21ada992f3bdb805c6eb98b4fd2dd84eff16db8d61bbb75f0dbdf295  project.parts/part04.b64' | sha256sum -c - || exit 44
+
             echo '=== Reconstruindo projeto Android ==='
             cat project.parts/part01.b64 project.parts/part02.b64 project.parts/part03.b64 project.parts/part04.b64 > project.full.b64
-            base64 -d project.full.b64 > jarvis_android_rebuilt.zip
-            echo 'SHA256 obtido:'
-            sha256sum jarvis_android_rebuilt.zip
-            echo 'SHA256 esperado: 7351529ccc6bacd9407f2ff469a8c535582dc9eb18d61f5585b5eb20478d8c32'
-            echo '7351529ccc6bacd9407f2ff469a8c535582dc9eb18d61f5585b5eb20478d8c32  jarvis_android_rebuilt.zip' | sha256sum -c -
+            base64 -d project.full.b64 > jarvis_android_rebuilt.zip || exit 45
+            echo '7351529ccc6bacd9407f2ff469a8c535582dc9eb18d61f5585b5eb20478d8c32  jarvis_android_rebuilt.zip' | sha256sum -c - || exit 46
 
             echo '=== Testando ZIP reconstruído ==='
-            unzip -t jarvis_android_rebuilt.zip
+            unzip -t jarvis_android_rebuilt.zip || exit 47
 
             echo '=== Extraindo projeto ==='
             rm -rf appsrc
             mkdir -p appsrc/project
-            unzip -q jarvis_android_rebuilt.zip -d appsrc/project
+            unzip -q jarvis_android_rebuilt.zip -d appsrc/project || exit 48
 
             echo '=== Gerando pareamento ==='
             SECRET=$(openssl rand -hex 24)
             echo "$SECRET" > appsrc/jarvis_secret.txt
-            sed -i "s/__JARVIS_SECRET__/$SECRET/g" appsrc/project/app/src/main/java/com/levy/jarvis/JarvisConfig.java
+            sed -i "s/__JARVIS_SECRET__/$SECRET/g" appsrc/project/app/src/main/java/com/levy/jarvis/JarvisConfig.java || exit 49
 
             echo '=== Compilando APK ==='
             cd appsrc/project
-            gradle assembleDebug --no-daemon --stacktrace
+            gradle assembleDebug --no-daemon --stacktrace || exit 50
           } 2>&1 | tee build.log
 
           STATUS=${PIPESTATUS[0]}
@@ -81,9 +84,10 @@ jobs:
             echo
             echo "Commit: $GITHUB_SHA"
             echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "Código interno: ${{ steps.jarvis_build.outputs.status }}"
             echo
             echo '```text'
-            tail -n 350 build.log
+            tail -n 400 build.log
             echo '```'
           } > issue_body.md
 
