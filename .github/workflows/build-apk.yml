@@ -44,29 +44,30 @@ jobs:
             echo 'c9de70cc500d3c92f150ff5f87117bd25c6a0d12b3822ef62de84338d436d655  project.parts/part01.b64' | sha256sum -c - || exit 41
             echo '3d5e21e15c98176f53221f57ba78a717925a0c25cccb7b44cbc2a6169c7a049a  project.parts/part02.b64' | sha256sum -c - || exit 42
             echo 'cf09e649b04a4740fc99a781c66778c013d855769abcc3ebc306b84a01b4efab  project.parts/part03.b64' | sha256sum -c - || exit 43
-            echo '2117794d21ada992f3bdb805c6eb98b4fd2dd84eff16db8d61bbb75f0dbdf295  project.parts/part04.b64' | sha256sum -c - || exit 44
+            echo '890aa028a4f8cb946f9091971dba2af3f9ab2f45d2b22ab154082a7171135154  project.parts/part04a.b64' | sha256sum -c - || exit 44
+            echo 'f08c4a1ab65415a5d5508fa70ead83fcaabb832a08a1d15a3e7041d15d49b238  project.parts/part04b.b64' | sha256sum -c - || exit 45
 
             echo '=== Reconstruindo projeto Android ==='
-            cat project.parts/part01.b64 project.parts/part02.b64 project.parts/part03.b64 project.parts/part04.b64 > project.full.b64
-            base64 -d project.full.b64 > jarvis_android_rebuilt.zip || exit 45
-            echo '7351529ccc6bacd9407f2ff469a8c535582dc9eb18d61f5585b5eb20478d8c32  jarvis_android_rebuilt.zip' | sha256sum -c - || exit 46
+            cat project.parts/part01.b64 project.parts/part02.b64 project.parts/part03.b64 project.parts/part04a.b64 project.parts/part04b.b64 > project.full.b64
+            base64 -d project.full.b64 > jarvis_android_rebuilt.zip || exit 46
+            echo '7351529ccc6bacd9407f2ff469a8c535582dc9eb18d61f5585b5eb20478d8c32  jarvis_android_rebuilt.zip' | sha256sum -c - || exit 47
 
             echo '=== Testando ZIP reconstruído ==='
-            unzip -t jarvis_android_rebuilt.zip || exit 47
+            unzip -t jarvis_android_rebuilt.zip || exit 48
 
             echo '=== Extraindo projeto ==='
             rm -rf appsrc
             mkdir -p appsrc/project
-            unzip -q jarvis_android_rebuilt.zip -d appsrc/project || exit 48
+            unzip -q jarvis_android_rebuilt.zip -d appsrc/project || exit 49
 
             echo '=== Gerando pareamento ==='
             SECRET=$(openssl rand -hex 24)
             echo "$SECRET" > appsrc/jarvis_secret.txt
-            sed -i "s/__JARVIS_SECRET__/$SECRET/g" appsrc/project/app/src/main/java/com/levy/jarvis/JarvisConfig.java || exit 49
+            sed -i "s/__JARVIS_SECRET__/$SECRET/g" appsrc/project/app/src/main/java/com/levy/jarvis/JarvisConfig.java || exit 50
 
             echo '=== Compilando APK ==='
             cd appsrc/project
-            gradle assembleDebug --no-daemon --stacktrace || exit 50
+            gradle assembleDebug --no-daemon --stacktrace || exit 51
           } 2>&1 | tee build.log
 
           STATUS=${PIPESTATUS[0]}
