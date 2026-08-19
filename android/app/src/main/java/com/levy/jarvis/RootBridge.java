@@ -5,27 +5,24 @@ import java.io.InputStreamReader;
 
 public final class RootBridge {
     private RootBridge() {}
-
-    // Evita abrir um novo processo "su" a cada atualização da tela.
-    // O resultado é mantido durante a execução do app; ao reiniciar o processo,
-    // o Jarvis testa novamente normalmente.
     private static volatile Boolean cachedAvailable = null;
 
     public static boolean available() {
         Boolean cached = cachedAvailable;
         if (cached != null) return cached;
-
         synchronized (RootBridge.class) {
             if (cachedAvailable != null) return cachedAvailable;
             try {
                 Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", "id"});
-                cachedAvailable = (p.waitFor() == 0);
+                cachedAvailable = p.waitFor() == 0;
             } catch (Exception e) {
                 cachedAvailable = false;
             }
             return cachedAvailable;
         }
     }
+
+    public static void resetRootCache() { cachedAvailable = null; }
 
     public static String exec(String command) {
         try {
@@ -41,7 +38,5 @@ public final class RootBridge {
         }
     }
 
-    public static void keyEvent(int code) {
-        exec("input keyevent " + code);
-    }
+    public static void keyEvent(int code) { exec("input keyevent " + code); }
 }
