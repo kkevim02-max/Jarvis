@@ -40,13 +40,21 @@ jobs:
             echo '=== Android SDK ==='
             sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-            echo '=== Testando ZIP ==='
-            unzip -t jarvis_android_src.zip
+            echo '=== Reconstruindo projeto Android ==='
+            cat project.parts/part01.b64 project.parts/part02.b64 project.parts/part03.b64 project.parts/part04.b64 > project.full.b64
+            base64 -d project.full.b64 > jarvis_android_rebuilt.zip
+            echo 'SHA256 obtido:'
+            sha256sum jarvis_android_rebuilt.zip
+            echo 'SHA256 esperado: 7351529ccc6bacd9407f2ff469a8c535582dc9eb18d61f5585b5eb20478d8c32'
+            echo '7351529ccc6bacd9407f2ff469a8c535582dc9eb18d61f5585b5eb20478d8c32  jarvis_android_rebuilt.zip' | sha256sum -c -
+
+            echo '=== Testando ZIP reconstruído ==='
+            unzip -t jarvis_android_rebuilt.zip
 
             echo '=== Extraindo projeto ==='
             rm -rf appsrc
             mkdir -p appsrc/project
-            unzip -q jarvis_android_src.zip -d appsrc/project
+            unzip -q jarvis_android_rebuilt.zip -d appsrc/project
 
             echo '=== Gerando pareamento ==='
             SECRET=$(openssl rand -hex 24)
@@ -105,3 +113,13 @@ jobs:
           name: Jarvis-APK-Pronto
           path: ready/
           retention-days: 30
+
+      - name: Report success automatically
+        if: steps.jarvis_build.outputs.status == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh issue create \
+            --title "JARVIS build SUCESSO - run $GITHUB_RUN_ID" \
+            --body "APK compilado com sucesso. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
