@@ -1,4 +1,4 @@
-name: Build JARVIS 3.0 PC + Android
+name: Build JARVIS 3.1 Cloud PC + Android
 
 on:
   push:
@@ -10,9 +10,9 @@ permissions:
   issues: write
 
 jobs:
-  build-v3:
+  build-v31:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
 
     steps:
       - name: Checkout
@@ -23,13 +23,27 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Restore JARVIS 3.0 source payload
+      - name: Restore Android 3.x source payload
         shell: pwsh
         run: |
-          python -c "import base64,gzip,pathlib; parts=sorted(pathlib.Path('v3_payload').glob('part*')); raw=''.join(p.read_text().strip() for p in parts); pathlib.Path('v3_payload/payload.tar.gz').write_bytes(base64.b64decode(raw))"
+          python -c "import base64,pathlib; parts=sorted(pathlib.Path('v3_payload').glob('part*')); raw=''.join(p.read_text().strip() for p in parts); pathlib.Path('v3_payload/payload.tar.gz').write_bytes(base64.b64decode(raw))"
           tar -xzf v3_payload/payload.tar.gz
+          Copy-Item v31/jarvis_app.py pc/jarvis_app.py -Force
+          Copy-Item v31/requirements-build.txt pc/requirements-build.txt -Force
+
+          $gradle = Get-Content android/app/build.gradle -Raw
+          $gradle = [regex]::Replace($gradle, 'versionCode\s+\d+', 'versionCode 31')
+          $gradle = [regex]::Replace($gradle, 'versionName\s+"[^"]+"', 'versionName "3.1"')
+          Set-Content android/app/build.gradle $gradle -Encoding utf8
+
+          Get-ChildItem android/app/src/main/java/com/levy/jarvis/*.java | ForEach-Object {
+            $c = Get-Content $_.FullName -Raw
+            $c = $c.Replace('J.A.R.V.I.S 3.0', 'J.A.R.V.I.S 3.1').Replace('• 3.0', '• 3.1').Replace(' 3.0', ' 3.1')
+            Set-Content $_.FullName $c -Encoding utf8
+          }
+
           python -m py_compile pc/jarvis_app.py
-          Write-Host 'JARVIS 3.0 payload restored.'
+          Write-Host 'JARVIS 3.1 source prepared.'
 
       - name: Generate one pairing secret for PC and APK
         shell: pwsh
@@ -47,7 +61,6 @@ jobs:
           $java = Get-Content $cfg -Raw
           $java = $java.Replace('__JARVIS_SECRET__', $secret)
           Set-Content $cfg $java -Encoding utf8
-
           Write-Host 'Pairing prepared (secret not printed).'
 
       - name: Install Windows app build dependencies
@@ -58,8 +71,7 @@ jobs:
 
       - name: Syntax check PC app
         shell: pwsh
-        run: |
-          python -m py_compile pc/jarvis_app.py
+        run: python -m py_compile pc/jarvis_app.py
 
       - name: Build Jarvis.exe (no console)
         shell: pwsh
@@ -70,6 +82,8 @@ jobs:
             --collect-all espeakng_loader `
             --collect-all phonemizer `
             --collect-all onnxruntime `
+            --collect-all misaki `
+            --collect-all soundfile `
             --hidden-import pystray._win32 `
             pc/jarvis_app.py
           if (!(Test-Path dist/Jarvis.exe)) { throw 'Jarvis.exe was not generated' }
@@ -86,15 +100,14 @@ jobs:
 
       - name: Install Android SDK 35
         shell: pwsh
-        run: |
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
 
-      - name: Build Jarvis 3.0 APK
+      - name: Build Jarvis 3.1 APK
         shell: pwsh
         working-directory: android
         run: |
@@ -107,44 +120,41 @@ jobs:
           New-Item -ItemType Directory -Force ready | Out-Null
           Copy-Item dist/Jarvis.exe ready/Jarvis.exe
           Copy-Item android/app/build/outputs/apk/debug/app-debug.apk ready/Jarvis.apk
-          Copy-Item jarvis_secret.txt ready/jarvis_secret.txt
           @'
-          J.A.R.V.I.S 3.0 — INSTALAÇÃO LIMPA
+          J.A.R.V.I.S 3.1 CLOUD — INSTALAÇÃO LIMPA
 
-          1. Extraia esta pasta inteira.
-          2. Abra Jarvis.exe.
-          3. Na primeira execução ele instala/repara automaticamente Ollama, a IA selecionada,
-             Whisper.cpp e a voz Kokoro, tudo sem deixar janelas CMD abertas.
-          4. Conecte o Motorola por USB e use o botão "Instalar APK no celular".
-          5. Depois disso o uso normal é por Wi-Fi. O USB/ADB fica só para instalação/manutenção.
+          1. Extraia a pasta inteira e abra Jarvis.exe.
+          2. Clique em "Abrir página da Groq" e crie uma chave no plano Free.
+          3. Clique em "Configurar Groq (grátis)", cole a chave e salve.
+          4. O Jarvis baixa sozinho a voz masculina pt-BR e prepara tudo em segundo plano.
+          5. Conecte o Motorola por USB e clique em "Instalar APK no celular".
+          6. Depois do APK instalado, o uso normal é por Wi-Fi.
 
-          O Jarvis.exe:
-          - roda na bandeja e em segundo plano;
-          - pode iniciar com o Windows;
-          - gerencia Ollama e o núcleo local;
-          - mostra status do PC/celular/modelo;
-          - possui perfis Rápido, Equilibrado e Inteligente;
-          - mantém ações de PC em lista permitida, sem executar comandos arbitrários da IA.
+          O QUE MUDOU:
+          - Entendimento de voz: Whisper Large V3 Turbo na Groq.
+          - Cérebro: GPT-OSS 20B na Groq, com raciocínio baixo para reduzir latência.
+          - Voz: Kokoro pm_alex, masculina, pt-BR.
+          - Resposta em streaming: começa a falar por frases antes de terminar todo o texto.
+          - "Ei, mano" e "Jarvis" aceitam variações/falhas de transcrição.
+          - Ollama não fica consumindo CPU por padrão; fica apenas como instalação antiga/fallback manual.
+          - A chave Groq é protegida pelo DPAPI do Windows e não é colocada no APK.
+          - ADB oficial é baixado pelo próprio app e reiniciado para evitar conflito de versões.
+          - O Jarvis continua na bandeja e pode iniciar com o Windows.
 
-          O Jarvis.apk 3.0:
-          - corrige o ForegroundService do Android 9;
-          - só inicia o microfone depois da permissão;
-          - reconecta ao PC automaticamente por Wi-Fi;
-          - usa "Ei, mano" e "Jarvis" como chamadas;
-          - mantém ganho alto para o microfone fraco;
-          - continua ativo em segundo plano.
+          IMPORTANTE:
+          O plano Free da Groq tem limites de uso. Não é uma promessa de serviço gratuito ilimitado para sempre.
           '@ | Set-Content ready/LEIA-ME.txt -Encoding utf8
 
-          Compress-Archive -Path ready/* -DestinationPath JARVIS_3_0_INSTALACAO_LIMPA.zip -Force
+          Compress-Archive -Path ready/* -DestinationPath JARVIS_3_1_CLOUD_INSTALACAO_LIMPA.zip -Force
           Get-ChildItem ready | Format-Table Name,Length
-          Get-Item JARVIS_3_0_INSTALACAO_LIMPA.zip | Format-List Name,Length
+          Get-Item JARVIS_3_1_CLOUD_INSTALACAO_LIMPA.zip | Format-List Name,Length
 
-      - name: Upload JARVIS 3.0 complete package
+      - name: Upload JARVIS 3.1 complete package
         uses: actions/upload-artifact@v4
         with:
-          name: JARVIS-3.0-INSTALACAO-LIMPA
+          name: JARVIS-3.1-CLOUD-INSTALACAO-LIMPA
           path: |
-            JARVIS_3_0_INSTALACAO_LIMPA.zip
+            JARVIS_3_1_CLOUD_INSTALACAO_LIMPA.zip
             ready/Jarvis.exe
             ready/Jarvis.apk
             ready/LEIA-ME.txt
@@ -157,7 +167,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh issue create --title "JARVIS 3.0 build SUCESSO - run $env:GITHUB_RUN_ID" --body "Jarvis.exe + Jarvis.apk 3.0 compilados. Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          gh issue create --title "JARVIS 3.1 CLOUD build SUCESSO - run $env:GITHUB_RUN_ID" --body "Jarvis.exe + Jarvis.apk 3.1 Cloud compilados. Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
 
       - name: Report failure
         if: failure()
@@ -165,4 +175,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh issue create --title "JARVIS 3.0 build FALHOU - run $env:GITHUB_RUN_ID" --body "A build 3.0 falhou. Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          gh issue create --title "JARVIS 3.1 CLOUD build FALHOU - run $env:GITHUB_RUN_ID" --body "A build 3.1 Cloud falhou. Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
