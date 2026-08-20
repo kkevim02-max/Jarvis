@@ -1,0 +1,84 @@
+
+# HTTP local/auth helpers and screen endpoint.
+s = require_replace(s, '            def _auth(self): return self.headers.get("X-Jarvis-Secret", "") == PAIR_SECRET\n',
+'''            def _auth(self): return self.headers.get("X-Jarvis-Secret", "") == PAIR_SECRET\n            def _local_client(self):\n                try:\n                    ip = ipaddress.ip_address(self.client_address[0].split("%")[0])\n                    return ip.is_private or ip.is_loopback\n                except Exception:\n                    return False\n''', 'HTTP local check')
+s = require_replace(s, '''                if path in ("/v4/status", "/health"):\n                    self._json(200, runtime.state.snapshot()); return''',
+'''                if path == "/v4/screen.jpg":\n                    if not self._auth() or not self._local_client():\n                        self._json(403, {"error":"local-only"}); return\n                    try:\n                        b = runtime.screen_jpeg(); self._headers(200, "image/jpeg", len(b)); self.wfile.write(b)\n                    except Exception as e:\n                        self._json(503, {"error":"screen-unavailable", "message":str(e)[:120]})\n                    return\n                if path in ("/v4/status", "/health"):\n                    self._json(200, runtime.state.snapshot()); return''', 'screen endpoint')
+s = require_replace(s, '                    runtime.process_utterance(wav, self.wfile); return\n', '                    runtime.process_utterance(wav, self.wfile, self.client_address[0]); return\n', 'source IP utterance')
+
+# Clean log and start version.
+s = require_replace(s, '        line = f"[{datetime.now().strftime(\'%H:%M:%S\')}] {str(text).replace(chr(10),\' \')[:600]}"\n',
+'''        fixed = repair_utf8(str(text)).replace(chr(10), " ")\n        line = f"[{datetime.now().strftime('%H:%M:%S')}] {fixed[:600]}"\n''', 'log utf8')
+s = s.replace('JARVIS 4.0 iniciado: servidor + painel + WebSocket.', 'JARVIS 4.1 iniciado: texto limpo + monitor local + controle remoto.')
+
+# Speak clean.
+old = '''    def _speak(self, wfile, text):\n        snap = self.state.snapshot()\n        if not snap["voice_enabled"] or snap["voice_volume"] <= 0:\n            self._event(wfile, {"type":"audio", "text":text, "audio":""}); return\n        self.state.set_phase("falando"); self.state.set_text(reply=text); self.ws.broadcast()\n        try:\n            wav = self.tts.wav(text, snap["voice_volume"] / 100.0)\n            self._event(wfile, {"type":"audio", "text":text, "audio":base64.b64encode(wav).decode("ascii")})'''
+new = '''    def _speak(self, wfile, text):\n        text = clean_for_speech(text)\n        if not text:\n            return\n        snap = self.state.snapshot()\n        if not snap["voice_enabled"] or snap["voice_volume"] <= 0:\n            self._event(wfile, {"type":"audio", "text":text, "audio":""}); return\n        self.state.set_phase("falando"); self.state.set_text(reply=text); self.ws.broadcast()\n        try:\n            wav = self.tts.wav(text, snap["voice_volume"] / 100.0)\n            self._event(wfile, {"type":"audio", "text":text, "audio":base64.b64encode(wav).decode("ascii")})'''
+s = require_replace(s, old, new, 'clean speak')
+
+# process_utterance signature, clean command, remote actions, final text.
+s = require_replace(s, '    def process_utterance(self, wav, wfile):\n', '    def process_utterance(self, wav, wfile, source_ip=""):\n', 'process signature')
+s = require_replace(s, '            heard = self.brain.transcribe(wav); self.state.set_text(command=heard); self.log(f"Ouvi: {heard or \'(vazio)\'}"); self.ws.broadcast()\n',
+'''            heard = repair_utf8(self.brain.transcribe(wav)); self.state.set_text(command=heard); self.log(f"Ouvi: {heard or '(vazio)'}"); self.ws.broadcast()\n''', 'transcript repair')
+s = require_replace(s, '''            if not command:\n                self.memory.add("user", heard); self.memory.add("assistant","Sim?"); self.state.set_text(reply="Sim?"); self._speak(wfile,"Sim?"); self.state.set_phase("online"); self.ws.broadcast(); self._event(wfile,{"type":"done"}); return\n            local = self.pc_actions.handle(command); acts = phone_actions(command)\n            if acts: self._event(wfile,{"type":"actions","actions":acts})''',
+'''            command = clean_command(command)\n            if not command:\n                self.memory.add("user", heard); self.memory.add("assistant","Sim?"); self.state.set_text(reply="Sim?"); self._speak(wfile,"Sim?"); self.state.set_phase("online"); self.ws.broadcast(); self._event(wfile,{"type":"done"}); return\n            local = self.pc_actions.handle(command); acts = phone_actions(command)\n            if acts:\n                target = self.resolve_android_target(command, source_ip)\n                if target is None or target.get("ip") == source_ip:\n                    self._event(wfile,{"type":"actions","actions":acts})\n                else:\n                    self.ws.send_actions(target.get("device_id"), acts)\n                    self.log(f"Ação enviada para {target.get('name','Android')}: {acts}")''', 'command/actions routing')
+s = s.replace('            if acts and len(normalize(command).split()) <= 8:', '            if acts and len(normalize(command).split()) <= 14:', 1)
+s = require_replace(s, '            full=full.strip() or "Não consegui formular a resposta."; self.memory.add("assistant",full); self.state.set_text(reply=full); self.log(f"Resposta ({time.time()-t0:.2f}s): {full[:220]}")\n',
+'''            full=clean_for_speech(full.strip() or "Não consegui formular a resposta."); self.memory.add("assistant",full); self.state.set_text(reply=full); self.log(f"Resposta ({time.time()-t0:.2f}s): {full[:220]}")\n''', 'final clean')
+
+# UI version labels.
+s = s.replace('MULTI-DEVICE CORE • 4.0', 'MULTI-DEVICE CORE • 4.1')
+s = s.replace('win.title("Groq - JARVIS 4.0")', 'win.title("Groq - JARVIS 4.1")')
+
+# Isolate ADB on port 5041 to stop daemon version fights.
+old = '''                adb=self.ensure_adb(); subprocess.run([str(adb),"kill-server"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=CREATE_NO_WINDOW); subprocess.run([str(adb),"start-server"],creationflags=CREATE_NO_WINDOW,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=15)\n                out=subprocess.check_output([str(adb),"devices"],text=True,creationflags=CREATE_NO_WINDOW,timeout=15); devs=[x.split()[0] for x in out.splitlines()[1:] if "\\tdevice" in x]'''
+new = '''                adb=self.ensure_adb(); base=[str(adb),"-P","5041"]\n                subprocess.run(base+["kill-server"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=CREATE_NO_WINDOW)\n                subprocess.run(base+["start-server"],creationflags=CREATE_NO_WINDOW,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=15)\n                out=subprocess.check_output(base+["devices"],text=True,creationflags=CREATE_NO_WINDOW,timeout=15); devs=[x.split()[0] for x in out.splitlines()[1:] if "\\tdevice" in x]'''
+s = require_replace(s, old, new, 'ADB isolated port')
+s = s.replace('[str(adb),"install","-r",str(apk)]', 'base+["install","-r",str(apk)]')
+s = s.replace('[str(adb),"uninstall","com.levy.jarvis"]', 'base+["uninstall","com.levy.jarvis"]')
+s = s.replace('[str(adb),"install",str(apk)]', 'base+["install",str(apk)]')
+s = s.replace('[str(adb),"shell","am","start","-n","com.levy.jarvis/.MainActivity"]', 'base+["shell","am","start","-n","com.levy.jarvis/.MainActivity"]')
+s = s.replace('JARVIS 4.0 APK instalado e aberto.', 'JARVIS 4.1 APK instalado e aberto.')
+write(p, s)
+
+# requirements
+rp=Path('pc/requirements-build.txt'); req=read(rp)
+if 'mss' not in req: req += '\nmss>=10.0,<11\n'
+write(rp,req)
+
+# ---------------- ANDROID MAIN ACTIVITY ----------------
+p=Path('android/app/src/main/java/com/levy/jarvis/MainActivity.java'); a=read(p)
+a=require_replace(a,'import android.graphics.Color;\n','import android.graphics.Bitmap;\nimport android.graphics.BitmapFactory;\nimport android.graphics.Color;\n','bitmap imports')
+a=require_replace(a,'import android.widget.Button;\n','import android.widget.Button;\nimport android.widget.FrameLayout;\nimport android.widget.ImageView;\n','monitor widget imports')
+a=require_replace(a,'    private boolean dragging = false;\n','    private boolean dragging = false;\n    private volatile boolean monitorMode = false;\n    private ImageView monitorImage;\n','monitor fields')
+a=a.replace('PAINEL • 4.0','PAINEL • 4.1').replace('TERMINAL • 4.0','TERMINAL • 4.1')
+# Add monitor row before root.addView(control)
+needle='''        if (JarvisConfig.ROLE_TERMINAL.equals(role)) {\n            LinearLayout r3 = new LinearLayout(this); r3.setOrientation(LinearLayout.HORIZONTAL); r3.addView(action("Acessibilidade", v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)))); r3.addView(action("Iniciar Jarvis", v -> startJarvis())); control.addView(r3);\n        }\n        root.addView(control);'''
+repl='''        if (JarvisConfig.ROLE_TERMINAL.equals(role)) {\n            LinearLayout r3 = new LinearLayout(this); r3.setOrientation(LinearLayout.HORIZONTAL); r3.addView(action("Acessibilidade", v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)))); r3.addView(action("Iniciar Jarvis", v -> startJarvis())); control.addView(r3);\n        }\n        LinearLayout rMonitor = new LinearLayout(this); rMonitor.setOrientation(LinearLayout.HORIZONTAL);\n        rMonitor.addView(action("🖥️ MONITOR PC (LOCAL)", v -> showMonitor()));\n        control.addView(rMonitor);\n        root.addView(control);'''
+a=require_replace(a,needle,repl,'monitor button')
+# Methods before startJarvis
+marker='    private void startJarvis() {\n'
+monitor_methods=r'''    private void showMonitor() {
+        if (JarvisService.serverHost == null) {
+            Toast.makeText(this, "Servidor ainda não foi encontrado", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        monitorMode = true;
+        handler.removeCallbacks(refresh);
+        FrameLayout frame = new FrameLayout(this);
+        frame.setBackgroundColor(Color.BLACK);
+        monitorImage = new ImageView(this);
+        monitorImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        frame.addView(monitorImage, new FrameLayout.LayoutParams(-1, -1));
+        Button back = new Button(this);
+        back.setText("← VOLTAR AO JARVIS"); back.setAllCaps(false); back.setTextColor(Color.WHITE);
+        back.setBackground(rounded(Color.argb(225, 7,16,24), Color.rgb(91,220,255), 14, 1));
+        FrameLayout.LayoutParams bp = new FrameLayout.LayoutParams(-1, dp(50), Gravity.BOTTOM); bp.setMargins(dp(14),dp(8),dp(14),dp(14));
+        back.setLayoutParams(bp); back.setOnClickListener(v -> stopMonitor()); frame.addView(back);
+        TextView local = label("SEGUNDO MONITOR • REDE LOCAL • SEM NUVEM", 11, Color.rgb(120,220,245));
+        local.setGravity(Gravity.CENTER); FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-1, dp(36), Gravity.TOP); local.setLayoutParams(lp); frame.addView(local);
+        setContentView(frame);
+        handler.post(monitorRefresh);
+    }
+
+    private void stopMonitor() {
