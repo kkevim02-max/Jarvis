@@ -1,0 +1,84 @@
+import re
+from pathlib import Path
+
+
+def read(p): return Path(p).read_text(encoding='utf-8-sig')
+def write(p,s): Path(p).write_text(s, encoding='utf-8')
+def require_replace(s, old, new, label):
+    if old not in s:
+        raise RuntimeError(f'4.1 patch: não encontrei {label}')
+    return s.replace(old, new, 1)
+
+# ---------------- PC SERVER ----------------
+p = Path('pc/jarvis_app.py')
+s = read(p)
+s = require_replace(s, 'import io\n', 'import io\nimport ipaddress\n', 'import io')
+s = require_replace(s, 'import pystray\n', 'import mss\nimport pystray\n', 'import pystray')
+s = s.replace('APP_NAME = "J.A.R.V.I.S 4.0 Multi-Device"', 'APP_NAME = "J.A.R.V.I.S 4.1 Multi-Device"')
+s = s.replace('VERSION = "4.0"', 'VERSION = "4.1"')
+
+anchor = '''def detect_wake(text: str):\n'''
+helpers = r'''def repair_utf8(text: str) -> str:
+    """Corrige mojibake comum (UTF-8 lido como Latin-1/CP1252)."""
+    text = str(text or "")
+    if not any(mark in text for mark in ("Ã", "Â", "â€", "ðŸ", "�")):
+        return text
+    candidates = [text]
+    for enc in ("latin-1", "cp1252"):
+        try:
+            candidates.append(text.encode(enc).decode("utf-8"))
+        except Exception:
+            pass
+    def score(value):
+        return sum(value.count(mark) for mark in ("Ã", "Â", "â€", "ðŸ", "�"))
+    return min(candidates, key=score)
+
+
+def clean_for_speech(text: str) -> str:
+    """Texto simples para tela/TTS: sem Markdown, URLs ou símbolos decorativos."""
+    text = repair_utf8(text)
+    text = re.sub(r"```.*?```", " ", text, flags=re.S)
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+    text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"https?://\S+|www\.\S+", " ", text)
+    text = re.sub(r"(?m)^\s*#{1,6}\s*", "", text)
+    text = re.sub(r"(?m)^\s*[-*+•]+\s*", "", text)
+    text = re.sub(r"[*_~]+", "", text)
+    text = text.replace("&", " e ")
+    # Remove pictogramas/símbolos que o sintetizador pode tentar pronunciar.
+    text = "".join(ch for ch in text if not unicodedata.category(ch).startswith("So"))
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def clean_command(text: str) -> str:
+    n = normalize(repair_utf8(text))
+    words = [w for w in n.split() if len(w) > 1 or w.isdigit()]
+    while words and words[0] in ("assistente", "por", "favor"):
+        words.pop(0)
+    return " ".join(words).strip()
+
+
+'''
+if anchor not in s: raise RuntimeError('4.1 patch: detect_wake')
+s = s.replace(anchor, helpers + anchor, 1)
+
+s = require_replace(s,
+'''        system = (\n            "Você é JARVIS, assistente pessoal de voz em português brasileiro. Responda naturalmente, com baixa latência e poucas frases. "\n            "Não invente que executou ações. O sistema pode controlar celular, tablet e PC por ações permitidas."\n        )''',
+'''        system = (\n            "Você é JARVIS, assistente pessoal de voz em português brasileiro. Responda naturalmente, com baixa latência e poucas frases. "\n            "Use SOMENTE texto puro para fala: sem Markdown, sem asteriscos, sem hashtags, sem emojis, sem blocos de código e sem listas decoradas. "\n            "Não invente que executou ações. O sistema pode controlar celular, tablet e PC por ações permitidas."\n        )''', 'system prompt')
+
+s = require_replace(s, 'for raw in r.iter_lines(decode_unicode=True):\n            if not raw:\n                continue\n            if raw.startswith("data: "):',
+'''for raw in r.iter_lines(decode_unicode=False):\n            if not raw:\n                continue\n            if isinstance(raw, bytes):\n                raw = raw.decode("utf-8", "replace")\n            if raw.startswith("data: "):''', 'Groq SSE UTF-8')
+s = require_replace(s, 'content = obj.get("choices", [{}])[0].get("delta", {}).get("content") or ""\n                if content:\n                    yield content',
+'''content = obj.get("choices", [{}])[0].get("delta", {}).get("content") or ""\n                content = repair_utf8(content)\n                if content:\n                    yield content''', 'Groq content decode')
+
+# PcActions: percentual antes dos comandos de subir/descer.
+old = '''        def key(code):\n            user32.keybd_event(code, 0, 0, 0); user32.keybd_event(code, 0, 2, 0)\n        if "volume" in n and "aument" in n: key(vk["up"]); return "Aumentei o volume do PC."'''
+new = '''        def key(code):\n            user32.keybd_event(code, 0, 0, 0); user32.keybd_event(code, 0, 2, 0)\n        percent = re.search(r"\\bvolume\\b.*?\\b(\\d{1,3})\\b", n)\n        if percent:\n            target = max(0, min(100, int(percent.group(1))))\n            # Teclas de mídia do Windows trabalham em passos próximos de 2%. Primeiro normaliza em 100%.\n            for _ in range(55): key(vk["up"])\n            for _ in range(max(0, round((100 - target) / 2))): key(vk["down"])\n            return f"Coloquei o volume do PC em aproximadamente {target}%."\n        if "volume" in n and "aument" in n: key(vk["up"]); return "Aumentei o volume do PC."'''
+s = require_replace(s, old, new, 'PC volume percentual')
+
+# phone_actions inteiro para comandos mais confiáveis.
+start = s.index('def phone_actions(text):')
+end = s.index('\n\nclass WsHub:', start)
+phone = r'''def phone_actions(text):
