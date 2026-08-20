@@ -1,0 +1,81 @@
+        monitorMode = false; handler.removeCallbacks(monitorRefresh); monitorImage = null; buildUi(); handler.post(refresh);
+    }
+
+    private final Runnable monitorRefresh = new Runnable() {
+        @Override public void run() {
+            if (!monitorMode) return;
+            final String host = JarvisService.serverHost;
+            if (host != null) new Thread(() -> {
+                try {
+                    byte[] data = NetworkClient.fetchScreen(host);
+                    final Bitmap bmp = BitmapFactory.decodeByteArray(data, 0, data.length);
+                    if (bmp != null && monitorMode) runOnUiThread(() -> { if (monitorImage != null && monitorMode) monitorImage.setImageBitmap(bmp); });
+                } catch (Exception ignored) {}
+            }, "JarvisMonitorFrame").start();
+            handler.postDelayed(this, 260);
+        }
+    };
+
+'''
+if marker not in a: raise RuntimeError('4.1 patch: startJarvis')
+a=a.replace(marker,monitor_methods+marker,1)
+a=a.replace('@Override protected void onDestroy(){ handler.removeCallbacks(refresh); super.onDestroy(); }','@Override protected void onDestroy(){ monitorMode=false; handler.removeCallbacks(monitorRefresh); handler.removeCallbacks(refresh); super.onDestroy(); }')
+write(p,a)
+
+# ---------------- ANDROID NETWORK ----------------
+p=Path('android/app/src/main/java/com/levy/jarvis/NetworkClient.java'); n=read(p)
+n=require_replace(n,'import java.io.BufferedReader;\n','import java.io.BufferedReader;\nimport java.io.ByteArrayOutputStream;\n','ByteArrayOutputStream')
+insert=r'''    public static byte[] fetchScreen(String host) throws Exception {
+        HttpURLConnection c = (HttpURLConnection)new URL("http://" + host + ":" + JarvisConfig.HTTP_PORT + "/v4/screen.jpg").openConnection();
+        c.setConnectTimeout(2200); c.setReadTimeout(5000); c.setRequestMethod("GET");
+        c.setRequestProperty("X-Jarvis-Secret", JarvisConfig.SECRET);
+        int code = c.getResponseCode();
+        if (code != 200) { c.disconnect(); throw new Exception("Tela HTTP " + code); }
+        ByteArrayOutputStream out = new ByteArrayOutputStream(256 * 1024);
+        try (InputStream is = c.getInputStream()) {
+            byte[] buf = new byte[16384]; int total = 0, r;
+            while ((r = is.read(buf)) > 0) {
+                total += r; if (total > 3 * 1024 * 1024) throw new Exception("Frame grande demais");
+                out.write(buf, 0, r);
+            }
+        } finally { c.disconnect(); }
+        return out.toByteArray();
+    }
+
+'''
+marker='    public static void sendStreaming(String host, byte[] wav, StreamListener listener) throws Exception {\n'
+if marker not in n: raise RuntimeError('4.1 patch: Network sendStreaming')
+n=n.replace(marker,insert+marker,1)
+write(p,n)
+
+# ---------------- ANDROID STATE SOCKET ----------------
+p=Path('android/app/src/main/java/com/levy/jarvis/StateSocket.java'); ss=read(p)
+ss=require_replace(ss,'import org.json.JSONObject;\n','import org.json.JSONArray;\nimport org.json.JSONObject;\n','JSONArray')
+ss=require_replace(ss,'    public interface Listener { void onState(JSONObject state); }\n    private final Listener listener;\n','    public interface Listener { void onState(JSONObject state); }\n    public interface ActionListener { void onActions(JSONArray actions); }\n    private final Listener listener;\n    private final ActionListener actionListener;\n','StateSocket listener')
+ss=require_replace(ss,'    public StateSocket(String host, Listener listener) throws Exception {\n        super(new URI("ws://" + host + ":" + JarvisConfig.WS_PORT + "/?secret=" + JarvisConfig.SECRET));\n        this.listener = listener;\n        setConnectionLostTimeout(25);\n    }\n',
+'''    public StateSocket(String host, String deviceId, Listener listener, ActionListener actionListener) throws Exception {\n        super(new URI("ws://" + host + ":" + JarvisConfig.WS_PORT + "/?secret=" + JarvisConfig.SECRET + "&device_id=" + java.net.URLEncoder.encode(deviceId, "UTF-8")));\n        this.listener = listener;\n        this.actionListener = actionListener;\n        setConnectionLostTimeout(25);\n    }\n''','StateSocket ctor')
+ss=require_replace(ss,'            if ("state".equals(o.optString("type"))) {\n                JSONObject state = o.optJSONObject("state");\n                if (state != null && listener != null) listener.onState(state);\n            }\n',
+'''            if ("state".equals(o.optString("type"))) {\n                JSONObject state = o.optJSONObject("state");\n                if (state != null && listener != null) listener.onState(state);\n            } else if ("actions".equals(o.optString("type"))) {\n                JSONArray actions = o.optJSONArray("actions");\n                if (actions != null && actionListener != null) actionListener.onActions(actions);\n            }\n''','StateSocket actions')
+write(p,ss)
+
+# ---------------- ANDROID SERVICE ----------------
+p=Path('android/app/src/main/java/com/levy/jarvis/JarvisService.java'); j=read(p)
+# helper deviceId before heartbeat
+marker='    private JSONObject deviceHeartbeat() throws Exception {\n'
+helper='''    private String deviceId() {\n        String id = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);\n        return id == null || id.isEmpty() ? Build.MODEL : id;\n    }\n\n'''
+if marker not in j: raise RuntimeError('4.1 patch: heartbeat marker')
+j=j.replace(marker,helper+marker,1)
+j=j.replace('        String id = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);\n        o.put("device_id", id == null ? Build.MODEL : id);','        o.put("device_id", deviceId());',1)
+j=require_replace(j,'            closeSocket(); socket = new StateSocket(host, this::applyState); socket.connect();\n',
+'''            closeSocket(); socket = new StateSocket(host, deviceId(), this::applyState, arr -> {\n                for (int i = 0; i < arr.length(); i++) { JSONObject action = arr.optJSONObject(i); if (action != null && actions != null) actions.execute(action); }\n            }); socket.connect();\n''','StateSocket service ctor')
+j=j.replace('JARVIS 4.0', 'JARVIS 4.1')
+write(p,j)
+
+# ---------------- GRADLE / WEB ----------------
+p=Path('android/app/build.gradle'); g=read(p); g=re.sub(r'versionCode\s+\d+','versionCode 410',g); g=re.sub(r'versionName\s+"[^"]+"','versionName "4.1"',g); write(p,g)
+web=Path('v4/painel-web/index.html')
+if web.exists():
+    h=read(web).replace('4.0','4.1')
+    write(web,h)
+
+print('JARVIS 4.1 patch aplicado: UTF-8/TTS limpo, ADB isolado, ações remotas e Monitor PC local.')
