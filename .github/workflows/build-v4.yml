@@ -1,4 +1,4 @@
-name: Build JARVIS 4.0 Multi-Device
+name: Build JARVIS 4.1 Multi-Device
 
 on:
   push:
@@ -10,9 +10,9 @@ permissions:
   issues: write
 
 jobs:
-  build-v4:
+  build-v41:
     runs-on: windows-latest
-    timeout-minutes: 55
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -23,12 +23,11 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Restore base project and JARVIS 4.0 sources
+      - name: Restore JARVIS 4 base and apply 4.1 fixes
         shell: pwsh
         run: |
           python -c "import base64,pathlib; p=sorted(pathlib.Path('v3_payload').glob('part*')); raw=''.join(x.read_text().strip() for x in p); pathlib.Path('v3_payload/payload.tar.gz').write_bytes(base64.b64decode(raw))"
           tar -xzf v3_payload/payload.tar.gz
-
           python -c "import base64,pathlib; p=sorted(pathlib.Path('v4_payload').glob('part*')); raw=''.join(x.read_text().strip() for x in p); pathlib.Path('v4_payload/payload.tar.gz').write_bytes(base64.b64decode(raw))"
           tar -xzf v4_payload/payload.tar.gz
 
@@ -43,37 +42,34 @@ jobs:
           Copy-Item v4/android/AndroidManifest.xml android/app/src/main/AndroidManifest.xml -Force
           Copy-Item v4/android/app-build.gradle android/app/build.gradle -Force
           [IO.File]::WriteAllBytes('android/jarvis-release.jks',[Convert]::FromBase64String((Get-Content v4/jarvis-release.jks.b64 -Raw).Trim()))
-          Write-Host 'JARVIS 4.0 sources restored.'
 
-      - name: Upload restored v4 source snapshot
-        uses: actions/upload-artifact@v4
-        with:
-          name: JARVIS-V4-SOURCE
-          path: v4
-          retention-days: 2
+          python -c "from pathlib import Path; ps=sorted(Path('v41').glob('part*')); Path('v41/patch_41.py').write_text(''.join(p.read_text(encoding='utf-8') for p in ps), encoding='utf-8')"
+          python -m py_compile v41/patch_41.py
+          python v41/patch_41.py
+          python -m py_compile pc/jarvis_app.py
+          Write-Host 'JARVIS 4.1 sources prepared and validated.'
 
-      - name: Generate one pairing secret for PC and same APK
+      - name: Generate one pairing secret for PC and the same APK
         shell: pwsh
         run: |
           $bytes = New-Object byte[] 24
           [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
           $secret = -join ($bytes | ForEach-Object { $_.ToString('x2') })
-
           $pc = Get-Content pc/jarvis_app.py -Raw
           $pc = $pc.Replace('__JARVIS_SECRET__', $secret)
           Set-Content pc/jarvis_app.py $pc -Encoding utf8
-
           $cfg = 'android/app/src/main/java/com/levy/jarvis/JarvisConfig.java'
           $java = Get-Content $cfg -Raw
           $java = $java.Replace('__JARVIS_SECRET__', $secret)
           Set-Content $cfg $java -Encoding utf8
           Write-Host 'Pairing generated without printing secret.'
 
-      - name: Validate source
+      - name: Validate compatibility
         shell: pwsh
         run: |
           python -m py_compile pc/jarvis_app.py
-          if (!(Select-String -Path android/app/build.gradle -Pattern 'minSdk 25' -Quiet)) { throw 'Android minSdk must be 25 for the tablet' }
+          if (!(Select-String -Path android/app/build.gradle -Pattern 'minSdk 25' -Quiet)) { throw 'Android minSdk must stay 25 for the tablet' }
+          if (!(Select-String -Path android/app/build.gradle -Pattern 'versionName "4.1"' -Quiet)) { throw 'Android version 4.1 patch missing' }
           if (!(Test-Path android/jarvis-release.jks)) { throw 'Stable signing key missing' }
 
       - name: Install PC build dependencies
@@ -90,10 +86,10 @@ jobs:
             --collect-all piper `
             --collect-all onnxruntime `
             --collect-all websockets `
+            --collect-all mss `
             --hidden-import pystray._win32 `
             pc/jarvis_app.py
           if (!(Test-Path dist/Jarvis.exe)) { throw 'Jarvis.exe was not generated' }
-          Get-Item dist/Jarvis.exe | Format-List Name,Length
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -113,14 +109,14 @@ jobs:
         with:
           gradle-version: '8.13'
 
-      - name: Build the SAME Jarvis.apk for phone and tablet
+      - name: Build the same Jarvis.apk for tablet and Motorola
         shell: pwsh
         working-directory: android
         run: |
           gradle assembleDebug --no-daemon --stacktrace
           if (!(Test-Path app/build/outputs/apk/debug/app-debug.apk)) { throw 'Jarvis.apk was not generated' }
 
-      - name: Prepare JARVIS 4.0 package
+      - name: Prepare JARVIS 4.1 package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force ready/app-android | Out-Null
@@ -129,63 +125,46 @@ jobs:
           Copy-Item android/app/build/outputs/apk/debug/app-debug.apk ready/app-android/Jarvis.apk
           Copy-Item dist/Jarvis.exe ready/servidor/Jarvis.exe
           Copy-Item v4/painel-web/index.html ready/painel-web/index.html
-
           @'
-          J.A.R.V.I.S 4.0 — MULTI-DEVICE
+          J.A.R.V.I.S 4.1 — MULTI-DEVICE
 
-          UM ÚNICO APK
-          O mesmo app-android/Jarvis.apk funciona no celular e no tablet.
-          Na primeira abertura escolha a função do aparelho:
-          - Terminal Jarvis: celular principal, microfone e reprodução da voz.
-          - Painel Jarvis: tablet, painel visual e controle remoto.
-          A função pode ser trocada depois dentro do mesmo APK.
+          CORREÇÕES 4.1
+          - Corrigido texto português quebrado como configuraÃ§Ãµes/nÃ£o.
+          - O texto falado é limpo antes do TTS: sem asteriscos, Markdown, emojis, links ou símbolos decorativos.
+          - Groq é decodificada explicitamente em UTF-8.
+          - Comandos simples de Android são executados antes da IA: Bluetooth, volume, abrir app e bloquear/desligar tela.
+          - Comandos para tablet/outro celular podem ser roteados ao Android correto via WebSocket.
+          - Volume percentual no PC é tratado localmente.
+          - ADB do instalador usa uma porta própria (5041), evitando conflito com outro adb.exe na porta 5037.
 
-          COMPATIBILIDADE
-          - Android mínimo: 7.1 / API 25.
-          - Compatível com o tablet Samsung SM-T112NU em LineageOS 7.1.2.
-          - Celular e tablet não executam IA pesada localmente.
+          MONITOR PC LOCAL
+          - Dentro do MESMO Jarvis.apk existe o botão MONITOR PC (LOCAL).
+          - Ele espelha a tela principal do PC no tablet ou Motorola pela rede Wi-Fi local.
+          - As imagens da tela NÃO são enviadas para Groq nem para qualquer nuvem.
+          - O endpoint de tela exige o segredo do APK e aceita somente cliente de rede local.
+          - Este modo é espelhamento da tela do PC. Não é ainda o modo Windows "Estender área de trabalho" com monitor virtual independente.
+
+          DISPOSITIVOS
+          - O tablet pode ficar como Painel principal do Jarvis.
+          - O Motorola pode ficar como Terminal opcional e entrar quando for usado.
+          - O mesmo Jarvis.apk funciona nos dois (Android 7.1+ / API 25+).
 
           INSTALAÇÃO
-          1. Extraia a pasta JARVIS_4_0 inteira.
-          2. Abra servidor/Jarvis.exe no PC.
-          3. Se você já usava o 3.1.1, o Jarvis tenta aproveitar a chave Groq salva. Caso contrário, use Configurar Groq.
-          4. Se os Androids não encontrarem o PC, clique uma vez em Liberar Firewall e aceite o UAC.
-          5. Conecte o celular por USB e use Instalar APK no Android. Escolha Terminal Jarvis.
-          6. Faça o mesmo no tablet e escolha Painel Jarvis. É exatamente o MESMO APK.
-          7. Depois da instalação, USB não é necessário. O uso normal é pela mesma rede Wi-Fi.
-          8. No PC, clique Abrir painel web ou acesse http://IP-DO-PC:8765.
-
-          SINCRONIZAÇÃO
-          - HTTP: porta 8765
-          - WebSocket em tempo real: porta 8766
-          - Descoberta na rede: UDP 47665
-          - Microfone, voz, volume, estados, último comando e resposta são compartilhados.
-          - Desligar o microfone pelo tablet ou painel web faz o Terminal parar de escutar.
-          - Mutar a voz do Jarvis não precisa alterar o volume da música do celular.
-
-          IA E VOZ
-          - STT: Groq Whisper Large V3 Turbo.
-          - IA: Groq GPT-OSS 20B.
-          - TTS: Piper Cadu, voz masculina pt-BR, gerada no PC.
-          - Sem modelo pesado no celular/tablet.
-
-          SEGURANÇA
-          - O APK e o servidor usam um segredo de pareamento gerado juntos na compilação.
-          - A chave da Groq fica protegida no Windows e não é colocada no APK.
-          - Ações de automação continuam em lista permitida; o modelo não recebe shell arbitrário.
-          - Esta linha 4.x usa uma chave de assinatura estável para permitir atualizações futuras.
-          - Ao migrar de uma versão antiga com assinatura diferente, a primeira instalação 4.0 pode remover o APK antigo antes de instalar.
+          1. Extraia o ZIP inteiro.
+          2. Feche o Jarvis antigo e abra servidor/Jarvis.exe.
+          3. A chave Groq salva no Windows deve continuar disponível.
+          4. Use Instalar APK para atualizar cada Android.
+          5. No tablet escolha Painel Jarvis. No Motorola, Terminal Jarvis quando quiser usar voz.
           '@ | Set-Content ready/README.txt -Encoding utf8
-
-          Compress-Archive -Path ready/* -DestinationPath JARVIS_4_0_MULTI_DEVICE.zip -Force
+          Compress-Archive -Path ready/* -DestinationPath JARVIS_4_1_MULTI_DEVICE.zip -Force
           Get-ChildItem ready -Recurse | Format-Table FullName,Length
-          Get-Item JARVIS_4_0_MULTI_DEVICE.zip | Format-List Name,Length
+          Get-Item JARVIS_4_1_MULTI_DEVICE.zip | Format-List Name,Length
 
-      - name: Upload JARVIS 4.0 final package
+      - name: Upload JARVIS 4.1 final package
         uses: actions/upload-artifact@v4
         with:
-          name: JARVIS-4.0-MULTI-DEVICE
-          path: JARVIS_4_0_MULTI_DEVICE.zip
+          name: JARVIS-4.1-MULTI-DEVICE
+          path: JARVIS_4_1_MULTI_DEVICE.zip
           retention-days: 30
           compression-level: 0
 
@@ -195,7 +174,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh issue create --title "JARVIS 4.0 MULTI-DEVICE build SUCESSO - run $env:GITHUB_RUN_ID" --body "Um APK para Terminal/Painel + servidor PC + painel web + WebSocket. Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          gh issue create --title "JARVIS 4.1 MULTI-DEVICE build SUCESSO - run $env:GITHUB_RUN_ID" --body "UTF-8/TTS corrigido + ADB isolado + ações Android remotas + Monitor PC local. Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
 
       - name: Report failure
         if: failure()
@@ -203,4 +182,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh issue create --title "JARVIS 4.0 MULTI-DEVICE build FALHOU - run $env:GITHUB_RUN_ID" --body "A build JARVIS 4.0 falhou. Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          gh issue create --title "JARVIS 4.1 MULTI-DEVICE build FALHOU - run $env:GITHUB_RUN_ID" --body "A build JARVIS 4.1 falhou. Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
