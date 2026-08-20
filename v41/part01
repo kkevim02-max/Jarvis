@@ -1,0 +1,84 @@
+    n = normalize(text)
+    actions = []
+    vol = re.search(r"\bvolume\b.*?\b(\d{1,3})\b", n)
+    if vol and any(x in n for x in ("celular", "telefone", "tablet", "motorola", "outro")):
+        actions.append({"type": "volume_set", "value": max(0, min(100, int(vol.group(1))))})
+    elif "volume" in n and ("aument" in n or "mais alto" in n):
+        actions.append({"type": "volume_up"})
+    elif "volume" in n and ("baix" in n or "diminu" in n):
+        actions.append({"type": "volume_down"})
+    if "bluetooth" in n and ("liga" in n or "ativ" in n): actions.append({"type": "bluetooth_on"})
+    elif "bluetooth" in n and ("desliga" in n or "desativ" in n): actions.append({"type": "bluetooth_off"})
+    if ("deslig" in n or "apag" in n or "bloque" in n) and "tela" in n:
+        actions.append({"type": "lock_screen"})
+    if "proxima" in n and ("musica" in n or "faixa" in n): actions.append({"type": "media_next"})
+    if "paus" in n and ("musica" in n or "reproduc" in n): actions.append({"type": "media_pause"})
+    if ("continua" in n or "reprodu" in n) and ("musica" in n or "faixa" in n): actions.append({"type": "media_play"})
+    m = re.search(r"\babr(?:a|e|ir)?\s+(?:o\s+|a\s+)?([a-z0-9 ._-]{2,55})", n)
+    if m and "no pc" not in n and "computador" not in n:
+        target = m.group(1).strip()
+        target = re.sub(r"\s+(?:no|na)\s+(?:celular|telefone|tablet|motorola).*$", "", target).strip()
+        target = re.sub(r"\s+(?:por favor|pra mim|para mim)$", "", target).strip()
+        if target: actions.append({"type": "open_app", "target": target})
+    # sem duplicatas idênticas
+    out = []
+    for a in actions:
+        if a not in out: out.append(a)
+    return out
+'''
+s = s[:start] + phone + s[end:]
+
+# WsHub: associação do socket ao device_id + envio remoto de ações.
+s = require_replace(s, '        self.clients = set()\n', '        self.clients = set()\n        self.device_sockets = {}\n', 'WsHub clients')
+s = require_replace(s, '''        self.clients.add(ws)\n        try:\n            await ws.send(json.dumps({"type": "state", "state": self.runtime.state.snapshot()}, ensure_ascii=False))''',
+'''        self.clients.add(ws)\n        device_id = query.get("device_id", [""])[0]\n        if device_id:\n            self.device_sockets[device_id] = ws\n        try:\n            await ws.send(json.dumps({"type": "state", "state": self.runtime.state.snapshot()}, ensure_ascii=False))''', 'WsHub map device')
+s = require_replace(s, '''        finally:\n            self.clients.discard(ws)\n\n    async def _broadcast''',
+'''        finally:\n            self.clients.discard(ws)\n            if device_id and self.device_sockets.get(device_id) is ws:\n                self.device_sockets.pop(device_id, None)\n\n    async def _send_actions(self, device_id, actions):\n        ws = self.device_sockets.get(device_id)\n        if ws is None:\n            return False\n        try:\n            await ws.send(json.dumps({"type": "actions", "actions": actions}, ensure_ascii=False, separators=(",", ":")))\n            return True\n        except Exception:\n            return False\n\n    def send_actions(self, device_id, actions):\n        if not self.loop or not device_id:\n            return False\n        try:\n            asyncio.run_coroutine_threadsafe(self._send_actions(device_id, actions), self.loop)\n            return True\n        except Exception:\n            return False\n\n    async def _broadcast''', 'WsHub send actions')
+
+# Runtime screen cache and methods.
+s = require_replace(s, '        self.ws = WsHub(self)\n', '''        self.ws = WsHub(self)\n        self.screen_lock = threading.Lock()\n        self.screen_cache = b""\n        self.screen_cache_at = 0.0\n''', 'screen fields')
+
+marker = '    def panel_html(self):\n'
+methods = r'''    def screen_jpeg(self):
+        """Espelhamento do monitor principal. Endpoint exige LAN + segredo de pareamento."""
+        now = time.time()
+        with self.screen_lock:
+            if self.screen_cache and now - self.screen_cache_at < 0.18:
+                return self.screen_cache
+            with mss.mss() as sct:
+                mon = sct.monitors[1]
+                shot = sct.grab(mon)
+                image = Image.frombytes("RGB", shot.size, shot.rgb)
+                if image.width > 1280:
+                    h = max(1, round(image.height * 1280 / image.width))
+                    image = image.resize((1280, h), Image.Resampling.BILINEAR)
+                bio = io.BytesIO()
+                image.save(bio, format="JPEG", quality=55, optimize=False)
+                self.screen_cache = bio.getvalue()
+                self.screen_cache_at = now
+                return self.screen_cache
+
+    def _source_device(self, source_ip):
+        devices = [d for d in self.state.snapshot()["devices"] if d.get("online")]
+        return next((d for d in devices if d.get("ip") == source_ip), None)
+
+    def resolve_android_target(self, command, source_ip):
+        n = normalize(command)
+        devices = [d for d in self.state.snapshot()["devices"] if d.get("online")]
+        source = self._source_device(source_ip)
+        if "outro celular" in n or "outro telefone" in n or "outro motorola" in n:
+            return next((d for d in devices if d.get("role") == "terminal" and d.get("ip") != source_ip), None)
+        if "tablet" in n or "painel" in n:
+            return next((d for d in devices if d.get("role") == "panel"), None)
+        if any(x in n for x in ("celular", "telefone", "motorola")):
+            if source and source.get("role") == "terminal":
+                return source
+            return next((d for d in devices if d.get("role") == "terminal"), None)
+        return source
+
+'''
+if marker not in s: raise RuntimeError('4.1 patch: panel_html')
+s = s.replace(marker, methods + marker, 1)
+
+# status snapshot gets local screen capability.
+s = require_replace(s, '                "ws_port": WS_PORT,\n', '                "ws_port": WS_PORT,\n                "local_screen": True,\n', 'state local_screen')
