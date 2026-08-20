@@ -45,6 +45,13 @@ jobs:
           [IO.File]::WriteAllBytes('android/jarvis-release.jks',[Convert]::FromBase64String((Get-Content v4/jarvis-release.jks.b64 -Raw).Trim()))
           Write-Host 'JARVIS 4.0 sources restored.'
 
+      - name: Upload restored v4 source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-V4-SOURCE
+          path: v4
+          retention-days: 2
+
       - name: Generate one pairing secret for PC and same APK
         shell: pwsh
         run: |
